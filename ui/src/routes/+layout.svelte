@@ -57,6 +57,7 @@
 	import { initZoom } from '$lib/zoom.svelte';
 	import { initShortcuts } from '$lib/shortcuts';
 	import { initErrorLog } from '$lib/errlog';
+	import { initPlugins } from '$lib/plugins.svelte';
 	import {
 		updateState,
 		availableMessage,
@@ -225,12 +226,14 @@
 		// mounted for days and a mount-only check would never see a release published in between.
 		const updateTimer = setInterval(checkForUpdatesQuiet, QUIET_INTERVAL_MS);
 		const teardownApp = initApp();
+		const teardownPlugins = initPlugins();
 		const teardownZoom = initZoom();
 		const teardownShortcuts = initShortcuts();
 		initImport();
 		return () => {
 			clearInterval(updateTimer);
 			teardownApp();
+			teardownPlugins();
 			teardownWin();
 			teardownZoom();
 			teardownShortcuts();
