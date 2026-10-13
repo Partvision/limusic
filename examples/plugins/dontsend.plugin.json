@@ -1,0 +1,10 @@
+{
+  "apiVersion": 1,
+  "id": "example.dontsend",
+  "name": "DontSend (JavaScript example)",
+  "version": "1.0.0",
+  "description": "Request suppressed listening activity reporting while this plugin is enabled.",
+  "type": "script",
+  "permissions": ["privacy.control"],
+  "source": "api.setDontSend(true).catch(console.error);"
+}

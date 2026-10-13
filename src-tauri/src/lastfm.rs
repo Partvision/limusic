@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use innertube::models::metadata::ArtistRun;
 use innertube::SongItem;
 use md5::{Digest, Md5};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 use crate::state::AppState;
@@ -118,6 +118,10 @@ impl ScrobbleConfig {
         let mut cfg = Self::parse(&db.get_setting("lastfm_config").unwrap_or_default());
         cfg.primary_artist = db.get_setting("lastfm_primary_artist").as_deref() == Some("true");
         cfg.primary_strict = db.get_setting("lastfm_primary_strict").as_deref() == Some("true");
+        if db.get_setting("dontsend").as_deref() == Some("true") {
+            cfg.enabled = false;
+            cfg.now_playing = false;
+        }
         cfg
     }
 }
@@ -317,6 +321,9 @@ struct Scrobbler {
 }
 
 impl Scrobbler {
+    fn private(&self) -> bool {
+        self.app.try_state::<Arc<AppState>>().is_some_and(|s| s.dontsend_enabled())
+    }
     fn new(
         app: tauri::AppHandle,
         session: Option<String>,
@@ -386,7 +393,7 @@ impl Scrobbler {
     /// time, from whichever credential is set.
     fn outgoing(&self) -> Option<Resolved> {
         let t = self.track.as_ref()?;
-        if !self.cfg.enabled {
+        if !self.cfg.enabled || self.private() {
             return None;
         }
         let r = resolve(t, &self.cfg);
@@ -408,6 +415,9 @@ impl Scrobbler {
     }
 
     async fn now_playing_lastfm(&self, sk: &str, r: &Resolved) {
+        if self.private() {
+            return;
+        }
         let mut params = vec![
             ("artist".to_string(), r.artist.clone()),
             ("track".to_string(), r.title.clone()),
@@ -423,6 +433,9 @@ impl Scrobbler {
     }
 
     async fn now_playing_listenbrainz(&self, token: &str, r: &Resolved) -> LbSent {
+        if self.private() {
+            return Ok(());
+        }
         let video_id = self.track.as_ref().map(|t| t.video_id.as_str()).unwrap_or("");
         let payload = serde_json::json!([{
             "track_metadata": crate::listenbrainz::track_metadata(r, video_id, self.duration),
@@ -447,6 +460,9 @@ impl Scrobbler {
     }
 
     async fn scrobble_lastfm(&self, sk: &str, r: &Resolved) {
+        if self.private() {
+            return;
+        }
         let mut params = vec![
             ("artist".to_string(), r.artist.clone()),
             ("track".to_string(), r.title.clone()),
@@ -466,6 +482,9 @@ impl Scrobbler {
     }
 
     async fn scrobble_listenbrainz(&self, token: &str, r: &Resolved) -> LbSent {
+        if self.private() {
+            return Ok(());
+        }
         let video_id = self.track.as_ref().map(|t| t.video_id.as_str()).unwrap_or("");
         let payload = serde_json::json!([{
             "listened_at": self.started_at,
@@ -996,6 +1015,18 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dontsend_overrides_reporting_without_erasing_preferences() {
+        let db = crate::db::Db::open(std::path::Path::new(":memory:")).unwrap();
+        db.set_setting("lastfm_config", r#"{"enabled":true,"now_playing":true}"#);
+        db.set_setting("dontsend", "true");
+        let cfg = ScrobbleConfig::load(&db);
+        assert!(!cfg.enabled && !cfg.now_playing);
+        db.set_setting("dontsend", "false");
+        let cfg = ScrobbleConfig::load(&db);
+        assert!(cfg.enabled && cfg.now_playing);
+    }
 
     #[test]
     fn only_plain_web_urls_reach_the_browser() {

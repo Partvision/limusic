@@ -1,0 +1,10 @@
+{
+  "apiVersion": 1,
+  "id": "example.skip-disliked",
+  "name": "Skip Disliked (JavaScript example)",
+  "version": "1.0.0",
+  "description": "Skip disliked songs or pause if no eligible track remains.",
+  "type": "script",
+  "permissions": ["playback.read", "playback.control"],
+  "source": "api.onPlayback(state => { if (state.track && state.rating === 'dislike' && !state.paused) api.skipDisliked().catch(console.error); });"
+}
