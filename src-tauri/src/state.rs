@@ -2532,7 +2532,7 @@ impl AppState {
     /// presence and closes the socket; turning it on re-pushes the current track.
     pub fn set_discord_enabled(&self, on: bool) {
         if let Some(d) = &self.discord {
-            d.set_enabled(on);
+            d.set_enabled(on && !self.dontsend_enabled());
         }
     }
 
@@ -2820,7 +2820,12 @@ impl AppState {
 
     /// Watch-history ping enabled? Default on; only an explicit `"false"` disables it.
     fn history_enabled(&self) -> bool {
-        self.db.get_setting("enable_history").map(|v| v != "false").unwrap_or(true)
+        !self.dontsend_enabled()
+            && self.db.get_setting("enable_history").map(|v| v != "false").unwrap_or(true)
+    }
+
+    pub fn dontsend_enabled(&self) -> bool {
+        self.db.get_setting("dontsend").as_deref() == Some("true")
     }
 
     /// Shuffle sticky across queues? Default off: turning shuffle on applies to the queue that's

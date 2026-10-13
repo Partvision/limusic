@@ -591,6 +591,16 @@ pub fn run() {
                 hotkeys::LAST_NONZERO_VOLUME.store(volume, std::sync::atomic::Ordering::Relaxed);
             }
             player.set_crossfade(state::saved_crossfade(&db));
+            if let Some(json) = db.get_setting("equalizer") {
+                match serde_json::from_str::<player::Equalizer>(&json) {
+                    Ok(config) if config.validate().is_ok() => {
+                        if let Err(e) = player.set_equalizer(config) {
+                            tracing::warn!(error = %e, "saved equalizer could not be applied");
+                        }
+                    }
+                    _ => tracing::warn!("saved equalizer is invalid; starting with bypass"),
+                }
+            }
             let events = match player.take_events() {
                 Some(ev) => ev,
                 None => fatal(
@@ -624,7 +634,8 @@ pub fn run() {
 
             // Discord rich presence — off unless the user opted in; parks on its channel until then.
             let discord = discord::spawn(
-                db.get_setting("discord_rpc").as_deref() == Some("true"),
+                db.get_setting("discord_rpc").as_deref() == Some("true")
+                    && db.get_setting("dontsend").as_deref() != Some("true"),
                 discord::RpcConfig::parse(db.get_setting("discord_rpc_config").as_deref()),
             );
 
