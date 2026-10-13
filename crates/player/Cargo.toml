@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 libmpv2 = "4"
 libmpv2-sys = "4"
 libc = "0.2"
+serde = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
