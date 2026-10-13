@@ -29,6 +29,9 @@ export const updateState = $state({
 let pending: Update | null = null;
 
 async function look(): Promise<boolean> {
+	if ((await getSettings()).fork_build === 'true') {
+		throw new Error('Automatic updates are disabled for this custom fork until it has its own signed release feed.');
+	}
 	let u: Update | null;
 	const beta = (await getSettings()).update_channel === 'beta';
 	const current = await getVersion();
