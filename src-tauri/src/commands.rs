@@ -28,8 +28,11 @@ pub async fn search(
     record_history: bool,
 ) -> Result<Vec<SongItem>, String> {
     let client = state.clients.get(innertube::METADATA_CLIENT).ok_or("metadata client missing")?;
-    let result =
-        state.it.search_songs(client, &query, record_history).await.map_err(|e| e.to_string())?;
+    let result = state
+        .it
+        .search_songs(client, &query, record_history && !state.dontsend_enabled())
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(result.items)
 }
 
@@ -59,7 +62,11 @@ pub async fn search_all(
     record_history: bool,
 ) -> Result<SearchResults, String> {
     let client = metadata_client(&state)?;
-    state.it.search_all(client, &query, record_history).await.map_err(|e| e.to_string())
+    state
+        .it
+        .search_all(client, &query, record_history && !state.dontsend_enabled())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Typeahead completions + a few matching rows, signed in (see `InnerTube::search_suggestions`).
@@ -241,7 +248,10 @@ pub async fn get_queue(state: St<'_>) -> Result<serde_json::Value, String> {
 /// `visitor_data`) and internal blobs (`queue_json`, `queue_index`, `queue_position`) never cross
 /// into the webview: they'd otherwise ship the login credential to the renderer on every open, and
 /// the webview can't overwrite them either.
-const UI_SETTINGS: [&str; 30] = [
+const UI_SETTINGS: [&str; 33] = [
+    "equalizer",
+    "plugins_json",
+    "dontsend",
     "volume",
     "proxy",
     "quality",
@@ -385,6 +395,7 @@ pub async fn get_settings(state: St<'_>) -> Result<serde_json::Value, String> {
         .map(|(k, v)| (k, serde_json::Value::String(v)))
         .collect();
     map.insert("native_chrome".into(), native_chrome(&state.db).into());
+    map.insert("fork_build".into(), "true".into());
     map.insert("native_video".into(), crate::state::native_video().to_string().into());
     Ok(serde_json::Value::Object(map))
 }
@@ -398,6 +409,19 @@ pub async fn set_setting(
 ) -> Result<(), String> {
     if !UI_SETTINGS.contains(&key.as_str()) {
         return Err(format!("unknown setting: {key}"));
+    }
+    if key == "equalizer" {
+        let config: player::Equalizer = serde_json::from_str(&value).map_err(|e| e.to_string())?;
+        config.validate().map_err(str::to_owned)?;
+        state.player.set_equalizer(config).map_err(|e| format!("Equalizer: {e}"))?;
+    }
+    if key == "plugins_json"
+        && (value.len() > 1_048_576 || serde_json::from_str::<serde_json::Value>(&value).is_err())
+    {
+        return Err("Plugin configuration must be valid JSON under 1 MB".into());
+    }
+    if key == "dontsend" && value != "true" && value != "false" {
+        return Err("DontSend must be true or false".into());
     }
     // Registers/removes the login autostart entry on toggle; the OS persists it from there, and
     // startup repoints an existing entry at the running binary (lib.rs). Before the write, so a
@@ -421,6 +445,10 @@ pub async fn set_setting(
         res.map_err(|e| format!("autostart: {e}"))?;
     }
     state.db.set_setting(&key, &value);
+    if key == "dontsend" {
+        state.set_discord_enabled(state.db.get_setting("discord_rpc").as_deref() == Some("true"));
+        state.lastfm.set_config(crate::lastfm::ScrobbleConfig::load(&state.db));
+    }
     // A music video track already playing gets its picture now rather than from the next track.
     if key == "music_videos" && value == "true" {
         state.inner().attach_current_video().await;
