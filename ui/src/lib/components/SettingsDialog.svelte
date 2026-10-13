@@ -49,11 +49,15 @@
 	import GlobalHotkeysSettings from '$lib/components/GlobalHotkeysSettings.svelte';
 	import LyricsSourcesSettings from '$lib/components/LyricsSourcesSettings.svelte';
 	import LanguagePicker from '$lib/components/LanguagePicker.svelte';
+	import EqualizerSettings from '$lib/components/EqualizerSettings.svelte';
+	import PluginsSettings from '$lib/components/PluginsSettings.svelte';
 
 	type TabId =
 		| 'general'
 		| 'themes'
 		| 'playback'
+		| 'equalizer'
+		| 'plugins'
 		| 'hotkeys'
 		| 'discord'
 		| 'scrobbling'
@@ -63,6 +67,8 @@
 		{ id: 'general', label: t('settings.tabs.general'), hint: t('settings.tabs.general_hint'), icon: Settings02Icon },
 		{ id: 'themes', label: t('settings.tabs.themes'), hint: t('settings.tabs.themes_hint'), icon: PaintBoardIcon },
 		{ id: 'playback', label: t('settings.tabs.playback'), hint: t('settings.tabs.playback_hint'), icon: PlayCircleIcon },
+		{ id: 'equalizer', label: t('settings.tabs.equalizer'), hint: t('settings.tabs.equalizer_hint'), icon: PlayCircleIcon },
+		{ id: 'plugins', label: t('settings.tabs.plugins'), hint: t('settings.tabs.plugins_hint'), icon: Settings02Icon },
 		{ id: 'hotkeys', label: t('settings.tabs.hotkeys'), hint: t('settings.tabs.hotkeys_hint'), icon: KeyboardIcon },
 		{ id: 'discord', label: t('settings.tabs.discord'), hint: t('settings.tabs.discord_hint'), icon: DiscordIcon },
 		{ id: 'scrobbling', label: t('settings.tabs.scrobbling'), hint: t('settings.tabs.scrobbling_hint'), icon: LastFmIcon },
@@ -509,6 +515,10 @@
 					<ScrobbleSettings {settings} />
 				{:else if tab === 'themes'}
 					<AppearanceSettings />
+				{:else if tab === 'equalizer'}
+					<EqualizerSettings />
+				{:else if tab === 'plugins'}
+					<PluginsSettings />
 				{:else}
 				<!-- relative: an absolute child (the lyrics sources' sr-only live region) would otherwise
 				     be laid out against the dialog, outside this pane, and make the overflow-hidden dialog
