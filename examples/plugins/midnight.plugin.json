@@ -1,0 +1,13 @@
+{
+  "apiVersion": 1,
+  "id": "example.midnight",
+  "name": "Midnight",
+  "version": "1.0.0",
+  "description": "A blue palette with matching light and dark colors.",
+  "type": "theme",
+  "permissions": ["theme.write"],
+  "theme": {
+    "light": { "background": "#f5f7ff", "foreground": "#18213b", "card": "#ffffff", "card-foreground": "#18213b", "primary": "#365bcc", "primary-foreground": "#ffffff", "accent": "#365bcc", "accent-foreground": "#ffffff", "muted": "#e5eaff", "muted-foreground": "#55617d", "sidebar": "#edf0ff", "sidebar-foreground": "#18213b", "border": "#d5ddef", "input": "#d5ddef" },
+    "dark": { "background": "#101525", "foreground": "#edf0ff", "card": "#171e33", "card-foreground": "#edf0ff", "primary": "#8ca9ff", "primary-foreground": "#101525", "accent": "#8ca9ff", "accent-foreground": "#101525", "muted": "#202b46", "muted-foreground": "#b0bddb", "sidebar": "#11182b", "sidebar-foreground": "#edf0ff", "border": "#2b395d", "input": "#2b395d" }
+  }
+}
