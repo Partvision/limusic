@@ -13,7 +13,9 @@ use libmpv2::mpv_node::MpvNode;
 use libmpv2::{Format, Mpv};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+mod equalizer;
 mod video;
+pub use equalizer::Equalizer;
 pub use video::{GlDisplay, Thumbnail, VideoRenderer};
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +27,8 @@ pub enum Error {
     /// the user as a toast.
     #[error("Pitch shifting isn't available in this build")]
     NoPitchFilter,
+    #[error("{0}")]
+    InvalidEqualizer(&'static str),
 }
 
 /// Events pumped from mpv's event thread. context/14 §player surface.
@@ -112,6 +116,7 @@ pub struct Player {
     /// that write to it have to be re-applied together: a bare `set_property("af", ...)` from
     /// either one would drop the other's filter.
     af: Mutex<(Option<f64>, i32)>,
+    equalizer: Mutex<Equalizer>,
 }
 
 /// One mpv instance plays one file at a time, so an *overlap* needs a second decoder and a second
@@ -352,7 +357,12 @@ impl Player {
             wid: AtomicI64::new(0),
         });
         spawn_deck_events(&a, 0, decks.clone())?;
-        Ok(Player { decks, events: Some(rx), af: Mutex::new((None, 0)) })
+        Ok(Player {
+            decks,
+            events: Some(rx),
+            af: Mutex::new((None, 0)),
+            equalizer: Mutex::new(Equalizer::default()),
+        })
     }
 
     /// The deck the app is hearing. Every command below acts on this one.
@@ -695,9 +705,59 @@ impl Player {
 
     fn apply_af(&self) -> Result<(), Error> {
         let (gain_db, semitones) = *self.af.lock().unwrap();
-        self.mpv().set_property("af", af_chain(gain_db, semitones).as_str())?;
+        let base = af_chain(gain_db, semitones);
+        let eq = self.equalizer.lock().unwrap().filter();
+        self.mpv().set_property("af", join_af(&base, eq.as_deref()).as_str())?;
         Ok(())
     }
+
+    /// Retune both decks, preserving their own loudness/pitch graph. A failed filter application
+    /// restores every touched deck, and the setting is only persisted by the caller on success.
+    pub fn set_equalizer(&self, config: Equalizer) -> Result<(), Error> {
+        config.validate().map_err(Error::InvalidEqualizer)?;
+        let mut current = self.equalizer.lock().unwrap();
+        let new_eq = config.filter();
+        let mut previous = Vec::new();
+        for deck in [&self.decks.a, self.decks.b.get().unwrap_or(&self.decks.a)] {
+            if previous.iter().any(|(m, _): &(Arc<Mpv>, String)| Arc::ptr_eq(m, deck)) {
+                continue;
+            }
+            let old = deck.get_property::<String>("af").unwrap_or_default();
+            // mpv may normalize the textual af property, so keep the EQ in a labelled filter.
+            let base = remove_equalizer(&old);
+            let next = join_af(&base, new_eq.as_deref());
+            previous.push((deck.clone(), old));
+            if let Err(error) = deck.set_property("af", next.as_str()) {
+                for (m, old) in previous {
+                    let _ = m.set_property("af", old.as_str());
+                }
+                return Err(error.into());
+            }
+        }
+        *current = config;
+        Ok(())
+    }
+}
+
+fn join_af(base: &str, eq: Option<&str>) -> String {
+    match eq {
+        Some(eq) if !base.is_empty() => format!("{base},@limusic_eq:{eq}"),
+        Some(eq) => format!("@limusic_eq:{eq}"),
+        None => base.to_owned(),
+    }
+}
+
+/// The labelled EQ is always last. The rest is mpv's own representation, copied verbatim.
+fn remove_equalizer(chain: &str) -> String {
+    chain
+        .split(",@limusic_eq:")
+        .next()
+        .unwrap_or("")
+        .split("@limusic_eq:")
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(',')
+        .to_owned()
 }
 
 /// The whole `af` chain: loudness gain, then pitch. Empty when neither is in play, so the default
@@ -1194,6 +1254,100 @@ fn perceptual_to_mpv(percent: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{af_chain, is_ao_init_failed, loadfile_args, perceptual_to_mpv, quoted};
+
+    #[test]
+    fn equalizer_keeps_gain_on_both_decks_and_bypasses_cleanly() {
+        use super::{Equalizer, Player};
+        let dir = std::env::temp_dir().join("limusic-equalizer-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = Player::new(dir.to_str().unwrap()).unwrap();
+        p.set_gain(Some(-3.0)).unwrap();
+        let idle = p.idle_mpv().unwrap();
+        let eq = Equalizer {
+            enabled: true,
+            bass: 6.0,
+            treble: -2.0,
+            stereo_width: 1.2,
+            preamp: -6.0,
+            ..Default::default()
+        };
+        p.set_equalizer(eq.clone()).unwrap();
+        for m in [p.mpv(), &idle] {
+            let chain = m.get_property::<String>("af").unwrap();
+            assert!(chain.contains("limusic_eq"), "{chain}");
+            assert!(chain.contains("bass=g=6"), "{chain}");
+        }
+        p.set_gain(Some(-5.0)).unwrap();
+        let chain = p.mpv().get_property::<String>("af").unwrap();
+        assert!(chain.contains("volume=-5dB") && chain.contains("bass=g=6"), "{chain}");
+        p.set_equalizer(Equalizer { bass: 12.5, ..eq.clone() }).unwrap_err();
+        assert_eq!(p.mpv().get_property::<String>("af").unwrap(), chain);
+        p.set_equalizer(Equalizer { enabled: false, ..eq }).unwrap();
+        let chain = p.mpv().get_property::<String>("af").unwrap();
+        assert!(chain.contains("volume=-5dB") && !chain.contains("limusic_eq"), "{chain}");
+        assert!(!idle.get_property::<String>("af").unwrap().contains("limusic_eq"));
+    }
+
+    /// Capture real decoded samples without an audio device. Checking a filter string alone
+    /// cannot establish that a bass slider actually changes the sound.
+    #[test]
+    fn bass_boost_changes_real_low_frequency_samples() {
+        use super::{Equalizer, Player, PlayerEvent};
+        use std::time::{Duration, Instant};
+        let dir = std::env::temp_dir().join(format!("limusic-eq-pcm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rms = |frequency: u32, bass: f64| {
+            let file = dir.join(format!("{frequency}-{bass}.pcm"));
+            let mut p = Player::new(dir.to_str().unwrap()).unwrap();
+            p.mpv().set_property("ao", "pcm").unwrap();
+            p.mpv().set_property("ao-pcm-file", file.to_str().unwrap()).unwrap();
+            p.mpv().set_property("ao-pcm-waveheader", false).unwrap();
+            p.mpv().set_property("audio-format", "s16").unwrap();
+            p.mpv().set_property("audio-channels", "stereo").unwrap();
+            p.set_equalizer(Equalizer {
+                enabled: true,
+                bass,
+                limiter: false,
+                ..Default::default()
+            })
+            .unwrap();
+            let mut events = p.take_events().unwrap();
+            p.load(
+                &format!("av://lavfi:sine=f={frequency}:d=0.4"),
+                &Default::default(),
+                None,
+                None,
+            )
+            .unwrap();
+            p.play().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut ended = false;
+            while Instant::now() < deadline {
+                match events.try_recv() {
+                    Ok(PlayerEvent::TrackEnded) => {
+                        ended = true;
+                        break;
+                    }
+                    Ok(PlayerEvent::TrackFailed(e) | PlayerEvent::Error(e)) => panic!("{e}"),
+                    _ => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            assert!(ended, "PCM render did not finish");
+            drop(p);
+            let bytes = std::fs::read(&file).unwrap();
+            let samples: Vec<f64> =
+                bytes.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]) as f64).collect();
+            assert!(samples.len() > 1000);
+            let samples = &samples[1000..]; // discard the filter's initial transient
+            let result = (samples.iter().map(|s| s * s).sum::<f64>() / samples.len() as f64).sqrt();
+            std::fs::remove_file(file).unwrap();
+            result
+        };
+        let low_ratio = rms(50, 6.0) / rms(50, 0.0);
+        let high_ratio = rms(2000, 6.0) / rms(2000, 0.0);
+        assert!(low_ratio > 1.7, "bass boost did not lift low frequencies: {low_ratio}");
+        assert!(high_ratio < 1.1, "bass boost unexpectedly lifted the midrange: {high_ratio}");
+    }
 
     #[test]
     fn gain_and_pitch_share_one_chain() {
